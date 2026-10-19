@@ -2,7 +2,27 @@
 import { NextResponse } from "next/server";
 import pool from "@/lib/db";
 
-const allowedTransitions = {
+const REASONS = [
+  "Damaged",
+  "Wrong Item",
+  "Size Issue",
+  "Not As Described",
+  "Changed Mind",
+];
+
+const STATUSES = [
+  "Open",
+  "In Review",
+  "Approved",
+  "Rejected",
+  "Completed",
+];
+
+const RESOLUTIONS = ["Refund", "Replacement", "Store Credit"];
+
+const FINAL_STATUSES = ["Approved", "Rejected", "Completed"];
+
+const ALLOWED_TRANSITIONS = {
   Open: ["In Review"],
   "In Review": ["Approved", "Rejected"],
   Approved: ["Completed"],
@@ -10,40 +30,54 @@ const allowedTransitions = {
   Completed: [],
 };
 
-const allowedResolutions = ["Refund", "Replacement", "Store Credit"];
+const DETAIL_FIELDS = [
+  "customer_name",
+  "customer_email",
+  "order_number",
+  "item_name",
+  "quantity",
+  "reason",
+];
 
+function validId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function errorResponse(error, message, status) {
+  return NextResponse.json({ error, message }, { status });
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+// GET: Fetch one request and its notes.
 export async function GET(request, { params }) {
   try {
-    const { id } = await params;
-    const requestId = Number(id);
+    const { id: rawId } = await params;
+    const id = validId(rawId);
 
-    if (!Number.isInteger(requestId) || requestId <= 0) {
-      return NextResponse.json(
-        {
-          error: "INVALID_REQUEST_ID",
-          message: "Request ID must be a positive integer.",
-        },
-        { status: 400 }
+    if (!id) {
+      return errorResponse(
+        "INVALID_REQUEST_ID",
+        "A valid request ID is required.",
+        400
       );
     }
 
     const result = await pool.query(
-      `SELECT id, reference, customer_name, customer_email,
-              order_number, item_name, quantity, reason,
-              status, resolution, refund_amount,
-              created_at, updated_at
+      `SELECT *
        FROM public.return_requests
        WHERE id = $1 AND is_removed = FALSE`,
-      [requestId]
+      [id]
     );
 
     if (result.rowCount === 0) {
-      return NextResponse.json(
-        {
-          error: "REQUEST_NOT_FOUND",
-          message: "Return request was not found.",
-        },
-        { status: 404 }
+      return errorResponse(
+        "REQUEST_NOT_FOUND",
+        "The return request was not found.",
+        404
       );
     }
 
@@ -52,7 +86,7 @@ export async function GET(request, { params }) {
        FROM public.return_notes
        WHERE request_id = $1
        ORDER BY created_at ASC, id ASC`,
-      [requestId]
+      [id]
     );
 
     return NextResponse.json({
@@ -60,218 +94,345 @@ export async function GET(request, { params }) {
       notes: notesResult.rows,
     });
   } catch (error) {
-    console.error("Get return request failed:", error.message);
+    console.error("Fetch return request failed:", error);
 
-    return NextResponse.json(
-      {
-        error: "INTERNAL_SERVER_ERROR",
-        message: "Unable to retrieve return request details.",
-      },
-      { status: 500 }
+    return errorResponse(
+      "INTERNAL_SERVER_ERROR",
+      "Could not fetch the return request.",
+      500
     );
   }
 }
 
+// PATCH: Update request details or change its status.
 export async function PATCH(request, { params }) {
-  let body;
-
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      {
-        error: "INVALID_JSON",
-        message: "Request body must be valid JSON.",
-      },
-      { status: 400 }
-    );
-  }
-
-  const { id } = await params;
-  const requestId = Number(id);
-  const { status, resolution, refund_amount } = body ?? {};
-
-  if (!Number.isInteger(requestId) || requestId <= 0) {
-    return NextResponse.json(
-      {
-        error: "INVALID_REQUEST_ID",
-        message: "Request ID must be a positive integer.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (
-    typeof status !== "string" ||
-    !Object.hasOwn(allowedTransitions, status)
-  ) {
-    return NextResponse.json(
-      {
-        error: "INVALID_STATUS",
-        message: "Provide a valid target status.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (
-    status === "Approved" &&
-    !allowedResolutions.includes(resolution)
-  ) {
-    return NextResponse.json(
-      {
-        error: "INVALID_RESOLUTION",
-        message: "Approval requires Refund, Replacement, or Store Credit.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (
-    status === "Approved" &&
-    resolution === "Refund" &&
-    (typeof refund_amount !== "number" ||
-      !Number.isFinite(refund_amount) ||
-      refund_amount <= 0)
-  ) {
-    return NextResponse.json(
-      {
-        error: "INVALID_REFUND_AMOUNT",
-        message: "Refund amount must be greater than zero.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (
-    status === "Approved" &&
-    resolution !== "Refund" &&
-    refund_amount !== undefined &&
-    refund_amount !== null
-  ) {
-    return NextResponse.json(
-      {
-        error: "REFUND_AMOUNT_NOT_ALLOWED",
-        message: "Only Refund resolutions may have a refund amount.",
-      },
-      { status: 400 }
-    );
-  }
-
   let client;
 
   try {
+    const { id: rawId } = await params;
+    const id = validId(rawId);
+
+    if (!id) {
+      return errorResponse(
+        "INVALID_REQUEST_ID",
+        "A valid request ID is required.",
+        400
+      );
+    }
+
+    const body = await request.json();
+
+    const allowedFields = [
+      ...DETAIL_FIELDS,
+      "status",
+      "resolution",
+      "refund_amount",
+    ];
+
+    const unknownFields = Object.keys(body).filter(
+      (field) => !allowedFields.includes(field)
+    );
+
+    if (unknownFields.length > 0) {
+      return errorResponse(
+        "INVALID_FIELDS",
+        `Unsupported field(s): ${unknownFields.join(", ")}.`,
+        400
+      );
+    }
+
+    if (Object.keys(body).length === 0) {
+      return errorResponse(
+        "EMPTY_UPDATE",
+        "Provide at least one field to update.",
+        400
+      );
+    }
+
+    const has = (field) =>
+      Object.prototype.hasOwnProperty.call(body, field);
+
+    for (const field of [
+      "customer_name",
+      "customer_email",
+      "order_number",
+      "item_name",
+    ]) {
+      if (has(field)) {
+        if (
+          typeof body[field] !== "string" ||
+          !body[field].trim()
+        ) {
+          return errorResponse(
+            "VALIDATION_ERROR",
+            `${field} must be a non-empty string.`,
+            400
+          );
+        }
+      }
+    }
+
+    if (
+      has("customer_email") &&
+      !isValidEmail(body.customer_email.trim())
+    ) {
+      return errorResponse(
+        "INVALID_EMAIL",
+        "Provide a valid customer email address.",
+        400
+      );
+    }
+
+    if (
+      has("quantity") &&
+      (!Number.isInteger(body.quantity) || body.quantity <= 0)
+    ) {
+      return errorResponse(
+        "INVALID_QUANTITY",
+        "Quantity must be a positive integer.",
+        400
+      );
+    }
+
+    if (has("reason") && !REASONS.includes(body.reason)) {
+      return errorResponse(
+        "INVALID_REASON",
+        "The selected return reason is invalid.",
+        400
+      );
+    }
+
+    if (has("status") && !STATUSES.includes(body.status)) {
+      return errorResponse(
+        "INVALID_STATUS",
+        "The selected status is invalid.",
+        400
+      );
+    }
+
+    if (has("resolution") && !RESOLUTIONS.includes(body.resolution)) {
+      return errorResponse(
+        "INVALID_RESOLUTION",
+        "Choose Refund, Replacement, or Store Credit.",
+        400
+      );
+    }
+
+    if (has("refund_amount")) {
+      const amount = body.refund_amount;
+
+      if (
+        typeof amount !== "number" ||
+        !Number.isFinite(amount) ||
+        amount <= 0
+      ) {
+        return errorResponse(
+          "INVALID_REFUND_AMOUNT",
+          "The refund amount must be a positive number.",
+          400
+        );
+      }
+    }
+
     client = await pool.connect();
     await client.query("BEGIN");
 
+    // Lock the row so concurrent updates cannot bypass lifecycle rules.
     const currentResult = await client.query(
-      `SELECT id, status, resolution, refund_amount
+      `SELECT *
        FROM public.return_requests
        WHERE id = $1 AND is_removed = FALSE
        FOR UPDATE`,
-      [requestId]
+      [id]
     );
 
     if (currentResult.rowCount === 0) {
       await client.query("ROLLBACK");
 
-      return NextResponse.json(
-        {
-          error: "REQUEST_NOT_FOUND",
-          message: "Return request was not found.",
-        },
-        { status: 404 }
+      return errorResponse(
+        "REQUEST_NOT_FOUND",
+        "The return request was not found.",
+        404
       );
     }
 
-    const currentRequest = currentResult.rows[0];
-    const currentStatus = currentRequest.status;
+    const current = currentResult.rows[0];
+    const currentStatus = current.status;
+    const nextStatus = has("status") ? body.status : currentStatus;
 
-    if (!allowedTransitions[currentStatus].includes(status)) {
+    const detailsChanged = DETAIL_FIELDS.some(has);
+
+    // Customer and item details cannot be changed after a final decision.
+    if (
+      detailsChanged &&
+      (FINAL_STATUSES.includes(currentStatus) ||
+        FINAL_STATUSES.includes(nextStatus))
+    ) {
       await client.query("ROLLBACK");
 
-      return NextResponse.json(
-        {
-          error: "INVALID_STATUS_TRANSITION",
-          message: `Cannot change status from ${currentStatus} to ${status}.`,
-        },
-        { status: 409 }
+      return errorResponse(
+        "REQUEST_DETAILS_LOCKED",
+        "Customer and item details cannot be changed after approval, rejection, or completion.",
+        409
       );
     }
 
-    // Save resolution details when approving.
-    // Preserve them when moving from Approved to Completed.
-    const resolutionValue =
-      status === "Approved"
-        ? resolution
-        : currentRequest.resolution;
+    // Validate only actual status changes.
+    if (
+      has("status") &&
+      nextStatus !== currentStatus &&
+      !ALLOWED_TRANSITIONS[currentStatus].includes(nextStatus)
+    ) {
+      await client.query("ROLLBACK");
 
-    const refundValue =
-      status === "Approved"
-        ? resolution === "Refund"
-          ? refund_amount
-          : null
-        : currentRequest.refund_amount;
+      return errorResponse(
+        "INVALID_STATUS_TRANSITION",
+        `Cannot change status from ${currentStatus} to ${nextStatus}.`,
+        409
+      );
+    }
+
+    // Resolution and refund details are supplied when approving.
+    if (nextStatus === "Approved" && currentStatus !== "Approved") {
+      if (!has("status") || !has("resolution")) {
+        await client.query("ROLLBACK");
+
+        return errorResponse(
+          "RESOLUTION_REQUIRED",
+          "Choose a resolution when approving a request.",
+          400
+        );
+      }
+
+      if (
+        body.resolution === "Refund" &&
+        (!has("refund_amount") ||
+          typeof body.refund_amount !== "number" ||
+          !Number.isFinite(body.refund_amount) ||
+          body.refund_amount <= 0)
+      ) {
+        await client.query("ROLLBACK");
+
+        return errorResponse(
+          "REFUND_AMOUNT_REQUIRED",
+          "A refund requires a positive refund amount.",
+          400
+        );
+      }
+
+      if (
+        body.resolution !== "Refund" &&
+        has("refund_amount")
+      ) {
+        await client.query("ROLLBACK");
+
+        return errorResponse(
+          "REFUND_AMOUNT_NOT_ALLOWED",
+          "A refund amount must not be recorded for Replacement or Store Credit.",
+          400
+        );
+      }
+    } else if (has("resolution") || has("refund_amount")) {
+      await client.query("ROLLBACK");
+
+      return errorResponse(
+        "RESOLUTION_UPDATE_NOT_ALLOWED",
+        "Resolution and refund details can only be supplied when approving a request.",
+        400
+      );
+    }
+
+    let nextResolution = current.resolution;
+    let nextRefundAmount = current.refund_amount;
+
+    if (nextStatus === "Approved" && currentStatus !== "Approved") {
+      nextResolution = body.resolution;
+      nextRefundAmount =
+        body.resolution === "Refund" ? body.refund_amount : null;
+    }
+
+    // Rejected requests do not retain an approval resolution.
+    if (nextStatus === "Rejected") {
+      nextResolution = null;
+      nextRefundAmount = null;
+    }
 
     const updatedResult = await client.query(
       `UPDATE public.return_requests
-       SET status = $1,
-           resolution = $2,
-           refund_amount = $3,
-           updated_at = NOW()
-       WHERE id = $4
-       RETURNING id, reference, status, resolution,
-                 refund_amount, updated_at`,
-      [status, resolutionValue, refundValue, requestId]
+       SET
+         customer_name = $1,
+         customer_email = $2,
+         order_number = $3,
+         item_name = $4,
+         quantity = $5,
+         reason = $6,
+         status = $7,
+         resolution = $8,
+         refund_amount = $9,
+         updated_at = NOW()
+       WHERE id = $10
+       RETURNING *`,
+      [
+        has("customer_name")
+          ? body.customer_name.trim()
+          : current.customer_name,
+        has("customer_email")
+          ? body.customer_email.trim()
+          : current.customer_email,
+        has("order_number")
+          ? body.order_number.trim()
+          : current.order_number,
+        has("item_name")
+          ? body.item_name.trim()
+          : current.item_name,
+        has("quantity") ? body.quantity : current.quantity,
+        has("reason") ? body.reason : current.reason,
+        nextStatus,
+        nextResolution,
+        nextRefundAmount,
+        id,
+      ]
     );
 
     await client.query("COMMIT");
 
     return NextResponse.json({
-      message: "Return request status updated successfully.",
+      message: "Return request updated successfully.",
       request: updatedResult.rows[0],
     });
   } catch (error) {
     if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-        // The transaction may already have rolled back.
-      }
-      
+      await client.query("ROLLBACK").catch(() => {});
     }
 
-    console.error("Update request status failed:", error.message);
+    console.error("Update return request failed:", error);
 
-    return NextResponse.json(
-      {
-        error: "INTERNAL_SERVER_ERROR",
-        message: "Unable to update request status.",
-      },
-      { status: 500 }
+    return errorResponse(
+      "INTERNAL_SERVER_ERROR",
+      "Could not update the return request.",
+      500
     );
   } finally {
     client?.release();
   }
 }
 
+// DELETE: Soft-remove an Open or Rejected request.
 export async function DELETE(request, { params }) {
-  const { id } = await params;
-  const requestId = Number(id);
-
-  if (!Number.isInteger(requestId) || requestId <= 0) {
-    return NextResponse.json(
-      {
-        error: "INVALID_REQUEST_ID",
-        message: "Request ID must be a positive integer.",
-      },
-      { status: 400 }
-    );
-  }
-
   let client;
 
   try {
+    const { id: rawId } = await params;
+    const id = validId(rawId);
+
+    if (!id) {
+      return errorResponse(
+        "INVALID_REQUEST_ID",
+        "A valid request ID is required.",
+        400
+      );
+    }
+
     client = await pool.connect();
     await client.query("BEGIN");
 
@@ -280,66 +441,55 @@ export async function DELETE(request, { params }) {
        FROM public.return_requests
        WHERE id = $1 AND is_removed = FALSE
        FOR UPDATE`,
-      [requestId]
+      [id]
     );
 
     if (result.rowCount === 0) {
       await client.query("ROLLBACK");
 
-      return NextResponse.json(
-        {
-          error: "REQUEST_NOT_FOUND",
-          message: "Return request was not found.",
-        },
-        { status: 404 }
+      return errorResponse(
+        "REQUEST_NOT_FOUND",
+        "The return request was not found.",
+        404
       );
     }
 
-    const currentRequest = result.rows[0];
+    const current = result.rows[0];
 
-    if (!["Open", "Rejected"].includes(currentRequest.status)) {
+    if (!["Open", "Rejected"].includes(current.status)) {
       await client.query("ROLLBACK");
 
-      return NextResponse.json(
-        {
-          error: "REQUEST_CANNOT_BE_REMOVED",
-          message: "Only Open or Rejected requests can be removed.",
-        },
-        { status: 409 }
+      return errorResponse(
+        "REQUEST_CANNOT_BE_REMOVED",
+        "Only Open or Rejected requests can be removed.",
+        409
       );
     }
 
     await client.query(
       `UPDATE public.return_requests
-       SET is_removed = TRUE,
-           updated_at = NOW()
+       SET is_removed = TRUE, updated_at = NOW()
        WHERE id = $1`,
-      [requestId]
+      [id]
     );
 
     await client.query("COMMIT");
 
     return NextResponse.json({
       message: "Return request removed successfully.",
-      id: requestId,
+      id,
     });
   } catch (error) {
     if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-        // The transaction may already have rolled back.
-      }
+      await client.query("ROLLBACK").catch(() => {});
     }
 
-    console.error("Remove return request failed:", error.message);
+    console.error("Remove return request failed:", error);
 
-    return NextResponse.json(
-      {
-        error: "INTERNAL_SERVER_ERROR",
-        message: "Unable to remove the return request.",
-      },
-      { status: 500 }
+    return errorResponse(
+      "INTERNAL_SERVER_ERROR",
+      "Could not remove the return request.",
+      500
     );
   } finally {
     client?.release();

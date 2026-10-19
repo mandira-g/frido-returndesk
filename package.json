@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
-  },
+  "dev": "next dev",
+  "build": "next build",
+  "start": "next start",
+  "lint": "eslint",
+  "seed": "node --env-file=.env.local scripts/seed.js"
+},
   "dependencies": {
     "next": "16.4.2",
     "pg": "^8.23.1",

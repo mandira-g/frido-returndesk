@@ -1,36 +1,120 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# ReturnDesk — Return Request Management System
 
-## Getting Started
+**A return request management application built with Next.js, React, PostgreSQL, and Tailwind CSS.**
 
-First, run the development server:
+## Project Links
+
+- **Live application:** Pending deployment
+- **GitHub repository:** https://github.com/mandira-g/frido-returndesk
+
+## Overview
+
+ReturnDesk helps manage product return requests through a defined workflow. Users can create requests, search and filter records, review request details, add notes, and manage status transitions.
+
+## Features
+
+- Create return requests with customer, order, item, quantity, and reason details.
+- Generate unique, human-readable request references.
+- Search by customer name, order number, or reference.
+- Filter by status and return reason.
+- Sort and paginate results on the server.
+- View request details and chronological notes.
+- Add notes without editing or deleting existing notes.
+- Manage the return lifecycle: Open, In Review, Approved, Rejected, and Completed.
+- Support Refund, Replacement, and Store Credit resolutions.
+- Prevent duplicate active return requests for the same item on an order.
+- Soft-remove eligible requests while retaining database records.
+- Seed sample data for development and testing.
+
+## Technology Stack
+
+- Next.js App Router
+- React
+- JavaScript
+- Tailwind CSS
+- PostgreSQL
+- Supabase PostgreSQL hosting
+- Node.js
+
+## Prerequisites
+
+Install Node.js and npm. You also need access to a PostgreSQL database.
+
+## Local Setup
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/mandira-g/frido-returndesk.git
+   cd frido-returndesk
+   ```
+
+2. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+3. Create a local environment file by copying `.env.example` to `.env.local`.
+
+4. Set `DATABASE_URL` in `.env.local` to your PostgreSQL connection string. Do not commit real credentials.
+
+5. Create the database tables using `database/schema.sql` in your PostgreSQL database.
+
+6. Start the development server:
+
+   ```bash
+   npm run dev
+   ```
+
+7. Open http://localhost:3000.
+
+## Database Setup and Seed Data
+
+The SQL schema is provided in `database/schema.sql`.
+
+After configuring `DATABASE_URL` and creating the tables, run the seed script:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run seed
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The seed script creates sample return requests and notes for testing. Run it against a suitable development database. Check the script's behavior before running it again, as it may refuse to seed when its records already exist.
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+## Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+See `.env.example` for the required environment variables.
 
-## Learn More
+- `DATABASE_URL`: PostgreSQL connection string.
 
-To learn more about Next.js, take a look at the following resources:
+Keep `.env.local` private. Never commit database passwords, access tokens, or other secrets.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Design Decisions
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Server-side search and filtering:** reduces the need to load all records into the browser.
+- **Parameterized SQL queries:** helps prevent SQL injection in query values.
+- **Database constraints:** enforce required fields and allowed values.
+- **Transactions:** keep request creation and duplicate checks consistent.
+- **Soft removal:** retains records rather than permanently deleting them.
+- **Append-only notes:** preserve the request's note history.
+- **Seed data:** makes it easier to demonstrate the application with realistic workflow states.
 
-## Deploy on Vercel
+## Assumptions
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Return reasons are limited to Damaged, Wrong Item, Size Issue, Not As Described, and Changed Mind.
+- A request can progress from Open to In Review, then to Approved or Rejected. Approved requests may progress to Completed.
+- Rejected and Completed requests are final.
+- Refund approvals require a positive refund amount. Replacement and Store Credit do not use a refund amount.
+- A duplicate active request is determined by order number and item name, case-insensitively.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Incomplete Work and Limitations
+
+Update this section before submission to state any requirements that remain incomplete or any deployment limitations. Do not claim that an untested feature works.
+
+## Time Spent
+
+Approximately **[enter the actual number of hours spent] hours**.
+
+## Deployment
+
+Update this section with the public application URL after deployment. Verify the live application and database before submitting.
